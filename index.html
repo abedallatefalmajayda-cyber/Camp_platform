@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>منصة بيانات المخيم</title>
+<title>مخيمات نور الهدى</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800&display=swap" rel="stylesheet">
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -11,8 +11,6 @@
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
-<script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js"></script>
-<script src="https://unpkg.com/qrcode/build/qrcode.min.js"></script>
 <style>
   body { font-family: 'Tajawal', sans-serif; }
   input, select, textarea, button { font-family: 'Tajawal', sans-serif; }
@@ -35,6 +33,802 @@
 const { useState, useEffect, useRef } = React;
 const _iconTimer = { current: null };
 function useLucideIcons() {
+  useEffect(() => {
+    clearTimeout(_iconTimer.current);
+    _iconTimer.current = setTimeout(() => { if (window.lucide) window.lucide.createIcons(); }, 60);
+  });
+}
+
+// ⚠️ رابط الباك إند الفعلي — تجربة أسبوع على Apps Script (نفس الرابط الشغّال والمختبر)
+const BACKEND_URL = "https://script.google.com/macros/s/AKfycbyLIXmwDWSynWnYVhjFe31li9wApa8hJT9F8ULMwGvbNdXrCgmsq2UpxqSh1a5DfbBrMg/exec";
+
+async function apiGet(params) {
+  const qs = new URLSearchParams(params).toString();
+  const res = await fetch(`${BACKEND_URL}?${qs}`);
+  return res.json();
+}
+async function apiPost(body) {
+  const res = await fetch(BACKEND_URL, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(body) });
+  return res.json();
+}
+
+// تحميل مكتبات ثقيلة بس وقت الحاجة الفعلية (Excel للمدير، QR لشاشة النجاح) — بدل تحميلها لكل زائر
+const _loadedScripts = {};
+function loadScriptOnce(src, globalName) {
+  if (window[globalName]) return Promise.resolve();
+  if (_loadedScripts[src]) return _loadedScripts[src];
+  _loadedScripts[src] = new Promise((resolve) => {
+    const s = document.createElement("script");
+    s.src = src; s.onload = resolve; document.body.appendChild(s);
+  });
+  return _loadedScripts[src];
+}
+
+function getPalette(theme) {
+  if (theme === "dark") {
+    return { bg: "linear-gradient(180deg,#0B0F19 0%,#121729 100%)", surface: "#171C2C", surface2: "#1E2438", border: "#2A3145",
+      text: "#F3F5FA", muted: "#9AA3B8", primaryGrad: "linear-gradient(135deg,#3563A8 0%,#3E8C68 100%)", primarySolid: "#5B8FD6",
+      accent: "#E4AE5C", accentGrad: "linear-gradient(135deg,#E4AE5C,#C97B2E)", success: "#4FAE82", warn: "#E0A855", danger: "#E07A6E", chipBg: "#20263A" };
+  }
+  return { bg: "linear-gradient(180deg,#F7F8FC 0%,#ECF0F8 100%)", surface: "#FFFFFF", surface2: "#F5F7FB", border: "#E6E9F2",
+    text: "#121522", muted: "#6B7280", primaryGrad: "linear-gradient(135deg,#1E3A5F 0%,#2F6B4F 100%)", primarySolid: "#1E3A5F",
+    accent: "#C98A2C", accentGrad: "linear-gradient(135deg,#D99A3D,#B26B1F)", success: "#2F6B4F", warn: "#B26B1F", danger: "#B23A2E", chipBg: "#EEF1F8" };
+}
+
+const FIELD_LABELS_MAP = { name: "الاسم الرباعي", birthdate: "تاريخ الميلاد", gender: "الجنس", social: "الحالة الاجتماعية", housingGov: "المحافظة الأصلية", housingAddress: "العنوان الأصلي بالتفصيل", housingOwnership: "ملكية السكن الأصلي", housingStatus: "حالة السكن الأصلي حالياً", isDisplaced: "هل نازح حالياً", displacedGov: "محافظة النزوح", displacedPlace: "مكان النزوح", displacedAddress: "عنوان النزوح بالتفصيل", income: "مستوى الدخل الشهري", incomeSource: "مصدر الدخل الحالي", phone: "الجوال الأساسي", altPhone: "الجوال البديل", commChannel: "طريقة التواصل المفضلة", adminNote: "ملاحظة للمدير", health: "الحالة الصحية" };
+const ATTACHMENT_TYPES = ["وثيقة إيجار", "تقرير طبي لحالة الإعاقة", "صورة ضرر السكن"];
+const HEALTH_OPTIONS = ["سليم تماماً", "أمراض مزمنة", "إعاقة", "إصابة حرب", "حامل", "استشهد أحد أفراد الأسرة", "احتياج خاص آخر"];
+function getAge(birthdate) {
+  if (!birthdate) return null;
+  const parts = String(birthdate).split(/[\/\-]/).map(Number);
+  if (parts.length < 1 || !parts[0]) return null;
+  const year = parts[0] > 31 ? parts[0] : parts[2];
+  if (!year) return null;
+  return new Date().getFullYear() - year;
+}
+function computeStats(families) {
+  const s = {
+    widows: 0, divorced: 0, martyred: 0, pregnant: 0, injured: 0, disabled: 0,
+    maleUnder5: 0, femaleUnder5: 0, maleUnder12: 0, femaleUnder12: 0,
+    under18: 0, over18: 0, elderly: 0,
+  };
+  families.forEach((f) => {
+    if (f.social === "أرمل/ة" && f.gender === "أنثى") s.widows++;
+    if (f.social === "مطلّق/ة") s.divorced++;
+    const health = String(f.health || "");
+    if (health.includes("استشهد")) s.martyred++;
+    if (health.includes("حامل")) s.pregnant++;
+    if (health.includes("إصابة حرب")) s.injured++;
+    if (health.includes("إعاقة")) s.disabled++;
+    const age = getAge(f.birthdate);
+    if (age !== null) {
+      if (age < 5 && f.gender === "ذكر") s.maleUnder5++;
+      if (age < 5 && f.gender === "أنثى") s.femaleUnder5++;
+      if (age < 12 && f.gender === "ذكر") s.maleUnder12++;
+      if (age < 12 && f.gender === "أنثى") s.femaleUnder12++;
+      if (age < 18) s.under18++; else s.over18++;
+      if (age >= 60) s.elderly++;
+    }
+  });
+  return s;
+}
+const STATS_LABELS = {
+  widows: "عدد الأرامل", divorced: "عدد المطلّقات", martyred: "عدد الشهداء", pregnant: "عدد الحوامل",
+  injured: "عدد المصابين", disabled: "عدد ذوي الإعاقة", maleUnder5: "ذكور أقل من 5", femaleUnder5: "إناث أقل من 5",
+  maleUnder12: "ذكور أقل من 12", femaleUnder12: "إناث أقل من 12", under18: "تحت 18 سنة", over18: "فوق 18 سنة", elderly: "كبار السن (60+)",
+};
+const DISEASE_OPTIONS = ["سكري", "ضغط دم", "قلب", "ربو", "كلى", "أخرى"];
+const DISABILITY_OPTIONS = ["حركية", "بصرية", "سمعية", "ذهنية", "أخرى"];
+function HealthDetail({ P, health, diseases, disabilities, onDiseases, onDisabilities }) {
+  return <div>
+    {health.includes("أمراض مزمنة") && (
+      <div className="mt-3"><div className="text-xs font-bold mb-2" style={{ color: P.muted }}>نوع المرض المزمن</div><CheckboxGroup P={P} value={diseases} onChange={onDiseases} options={DISEASE_OPTIONS} /></div>
+    )}
+    {health.includes("إعاقة") && (
+      <div className="mt-3"><div className="text-xs font-bold mb-2" style={{ color: P.muted }}>نوع الإعاقة</div><CheckboxGroup P={P} value={disabilities} onChange={onDisabilities} options={DISABILITY_OPTIONS} /></div>
+    )}
+  </div>;
+}
+const FAQ = [
+  { q: "كيف بقدر أعدّل رقم جوالي؟", a: "افتح ملفك، عدّل الحقل بقسم أرقام التواصل، واضغط حفظ وإرسال — التعديل بيروح لمدير المخيم للموافقة." },
+  { q: "نسيت الرمز السري شو أعمل؟", a: "تواصل مع لجنة المخيم مباشرة (الرقم بالأسفل)." },
+  { q: "قديش بيوخذ وقت مراجعة تحديثاتي؟", a: "عادةً خلال 2-3 أيام من قبل مدير المخيم." },
+];
+
+function Icon({ name, size = 18, style }) { return <i data-lucide={name} style={{ width: size, height: size, ...style }}></i>; }
+function ThemeToggle({ theme, setTheme, P }) { return <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")} className="btn-anim w-10 h-10 rounded-full flex items-center justify-center" style={{ background: P.chipBg, color: P.text }}><Icon name={theme === "dark" ? "sun" : "moon"} size={18} /></button>; }
+function Spinner({ size = 16 }) { return <Icon name="loader-2" size={size} style={{ animation: "spin 1s linear infinite" }} />; }
+function Modal({ P, title, icon, onClose, children }) {
+  return <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-5" style={{ background: "rgba(10,12,20,0.5)" }}>
+    <div className="w-full sm:max-w-md max-h-[85vh] overflow-y-auto rounded-t-3xl sm:rounded-3xl p-7" style={{ background: P.surface }}>
+      <div className="flex items-center justify-between mb-5"><div className="flex items-center gap-2 text-lg font-extrabold" style={{ color: P.text }}><Icon name={icon} size={20} style={{ color: P.primarySolid }} /> {title}</div><button onClick={onClose} style={{ color: P.muted }}><Icon name="x" size={20} /></button></div>
+      {children}
+    </div>
+  </div>;
+}
+function Field({ P, label, required, children }) { return <div className="mb-5"><div className="text-sm font-bold mb-2" style={{ color: P.text }}>{label} {required && <span style={{ color: P.accent }}>*</span>}</div>{children}</div>; }
+function Input({ P, value, onChange, placeholder, disabled, type = "text" }) { return <input type={type} value={value || ""} onChange={(e) => onChange && onChange(e.target.value)} placeholder={placeholder} disabled={disabled} className="w-full px-4 py-3.5 rounded-2xl text-base outline-none" style={{ border: `1.5px solid ${P.border}`, background: disabled ? P.surface2 : P.surface, color: disabled ? P.muted : P.text }} />; }
+function TextArea({ P, value, onChange, placeholder, rows = 3 }) { return <textarea value={value || ""} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} rows={rows} className="w-full px-4 py-3.5 rounded-2xl text-base outline-none resize-none" style={{ border: `1.5px solid ${P.border}`, background: P.surface, color: P.text }} />; }
+function Select({ P, value, onChange, options }) { return <select value={value || ""} onChange={(e) => onChange(e.target.value)} className="w-full px-4 py-3.5 rounded-2xl text-base outline-none" style={{ border: `1.5px solid ${P.border}`, background: P.surface, color: P.text }}><option value="">الكل</option>{options.map((o) => <option key={o} value={o}>{o}</option>)}</select>; }
+function RadioGroup({ P, value, onChange, options }) { return <div className="flex gap-3">{options.map((o) => (<button key={o} onClick={() => onChange(o)} className="btn-anim flex-1 py-3.5 rounded-2xl text-sm font-bold text-center" style={{ border: `1.5px solid ${value === o ? "transparent" : P.border}`, backgroundImage: value === o ? P.primaryGrad : "none", background: value === o ? undefined : P.surface, color: value === o ? "#fff" : P.text }}>{o}</button>))}</div>; }
+function CheckboxGroup({ P, value = [], onChange, options }) {
+  const toggle = (o) => onChange(value.includes(o) ? value.filter((v) => v !== o) : [...value, o]);
+  return <div className="grid grid-cols-2 gap-2">{options.map((o) => (<button key={o} onClick={() => toggle(o)} className="btn-anim flex items-center gap-2 px-3 py-3 rounded-2xl text-sm text-right" style={{ border: `1.5px solid ${value.includes(o) ? P.primarySolid : P.border}`, background: value.includes(o) ? P.chipBg : P.surface, color: P.text }}><span className="w-4 h-4 rounded flex items-center justify-center shrink-0" style={{ background: value.includes(o) ? P.primarySolid : "transparent", border: `1.5px solid ${value.includes(o) ? P.primarySolid : P.border}` }}>{value.includes(o) && <Icon name="check" size={11} style={{ color: "#fff" }} />}</span>{o}</button>))}</div>;
+}
+function Card({ P, icon, title, children, right }) { return <div className="rounded-3xl p-7 mb-6" style={{ background: P.surface, border: `1px solid ${P.border}` }}><div className="flex items-center justify-between mb-6"><div className="flex items-center gap-3"><span className="w-11 h-11 rounded-2xl flex items-center justify-center" style={{ background: P.chipBg, color: P.primarySolid }}><Icon name={icon} size={20} /></span><span className="text-lg font-extrabold" style={{ color: P.text }}>{title}</span></div>{right}</div>{children}</div>; }
+function Loading({ P }) { return <div style={{ background: P.bg, minHeight: "100vh" }} className="px-5 py-8 max-w-lg mx-auto flex items-center justify-center"><div className="text-center"><Spinner size={32} /><div className="mt-3 text-sm" style={{ color: P.muted }}>جاري التحميل...</div></div></div>; }
+
+function Landing({ onPick, theme, setTheme, P }) {
+  const secondary = [
+    { key: "admin", title: "دخول المسؤولين", icon: "shield-check", grad: "linear-gradient(160deg,#6FA8E8 0%,#2C5FA8 100%)" },
+    { key: "join", title: "طلب انضمام", icon: "user-plus", grad: "linear-gradient(160deg,#8FD19E 0%,#3FA65A 100%)" },
+  ];
+  return <div style={{ background: P.bg, minHeight: "100vh" }}>
+    {/* Hero */}
+    <div style={{ position: "relative", overflow: "hidden", backgroundImage: "linear-gradient(160deg,#EAF4FB 0%,#D8ECF5 60%,#CFE8F0 100%)", paddingBottom: 70 }}>
+      <div style={{ position: "absolute", top: -30, left: -20, width: 160, height: 160, borderRadius: "50%", background: "radial-gradient(circle,#BFE3D0 0%,transparent 70%)" }} />
+      <div style={{ position: "absolute", top: 40, right: -40, width: 220, height: 220, borderRadius: "50%", background: "radial-gradient(circle,#BEDCEF 0%,transparent 70%)" }} />
+      <div className="relative flex justify-end items-center gap-2 p-5">
+        <span title="قريباً - دعم لغات إضافية" className="text-xs font-bold px-3 py-2 rounded-full" style={{ background: "rgba(255,255,255,0.6)", color: "#3A5A6B" }}>EN</span>
+        <ThemeToggle theme={theme} setTheme={setTheme} P={{ ...P, chipBg: "rgba(255,255,255,0.6)", text: "#3A5A6B" }} />
+      </div>
+      <div className="relative text-center px-6 pt-4">
+        <img src="logo.png" alt="شعار مخيمات نور الهدى" onError={(e) => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} className="w-20 h-20 object-contain mx-auto mb-3" />
+        <div className="w-20 h-20 rounded-3xl mx-auto mb-3 hidden items-center justify-center" style={{ backgroundImage: "linear-gradient(160deg,#2E6B8E,#1E3A5F)", boxShadow: "0 10px 25px rgba(30,58,95,0.25)" }}>
+          <Icon name="home" size={30} style={{ color: "#fff" }} />
+        </div>
+        <div className="text-lg font-extrabold" style={{ color: "#1E3A5F" }}>مخيمات نور الهدى</div>
+        <div className="text-xs mb-8" style={{ color: "#5C7A8A" }}>معاً يداً بيد نحو الخير</div>
+        <div className="text-2xl font-extrabold mb-1" style={{ color: "#1E3A5F" }}>مرحباً بك في</div>
+        <div className="text-3xl font-extrabold mb-4" style={{ color: "#1E3A5F" }}>مخيمات نور الهدى</div>
+        <div className="text-sm max-w-xs mx-auto" style={{ color: "#4A6575", lineHeight: 1.9 }}>منصة إلكترونية تهدف إلى تسهيل الخدمات وتنظيم شؤون المخيم ومتابعة احتياجات النازحين</div>
+      </div>
+      <svg viewBox="0 0 500 60" preserveAspectRatio="none" style={{ position: "absolute", bottom: -1, left: 0, width: "100%", height: 60 }}>
+        <path d="M0,30 C150,70 350,-10 500,30 L500,60 L0,60 Z" fill={P.bg === "#FFFFFF" ? P.bg : "#F7F8FC"} />
+      </svg>
+    </div>
+
+    {/* Primary action: resident login */}
+    <div className="px-5 -mt-8 relative z-10 max-w-sm mx-auto">
+      <button onClick={() => onPick("resident")} className="btn-anim w-full text-right rounded-3xl p-7 flex flex-col items-center text-center text-white mb-4" style={{ backgroundImage: "linear-gradient(160deg,#5FC4C0 0%,#2E8B87 100%)", boxShadow: "0 14px 32px rgba(46,139,135,0.35)" }}>
+        <span className="w-20 h-20 rounded-full flex items-center justify-center mb-3" style={{ background: "rgba(255,255,255,0.25)" }}><Icon name="user" size={34} /></span>
+        <div className="font-extrabold text-xl mb-1">دخول النازح</div>
+        <div className="text-sm mb-4" style={{ opacity: 0.9 }}>للاستفادة من الخدمات المتاحة وتحديث بياناتك</div>
+        <span className="px-6 py-2.5 rounded-full flex items-center gap-2 text-sm font-bold" style={{ background: "rgba(255,255,255,0.25)" }}>ابدأ الآن <Icon name="arrow-left" size={15} /></span>
+      </button>
+
+      {/* Secondary actions */}
+      <div className="grid grid-cols-2 gap-3">
+        {secondary.map((c) => (
+          <button key={c.key} onClick={() => onPick(c.key)} className="btn-anim rounded-2xl p-4 flex flex-col items-center text-center text-white" style={{ backgroundImage: c.grad, boxShadow: "0 6px 16px rgba(0,0,0,0.1)" }}>
+            <span className="w-11 h-11 rounded-full flex items-center justify-center mb-2" style={{ background: "rgba(255,255,255,0.25)" }}><Icon name={c.icon} size={18} /></span>
+            <div className="font-bold text-xs">{c.title}</div>
+          </button>
+        ))}
+      </div>
+    </div>
+
+    {/* Footer */}
+    <div className="text-center py-12 px-5">
+      <div className="flex items-center justify-center gap-3 mb-8">
+        <span style={{ flex: 1, maxWidth: 60, height: 1, background: P.border }} />
+        <Icon name="leaf" size={16} style={{ color: P.success }} />
+        <span className="text-sm font-bold" style={{ color: P.text }}>معاً .. نبني الأمل</span>
+        <Icon name="leaf" size={16} style={{ color: P.success }} />
+        <span style={{ flex: 1, maxWidth: 60, height: 1, background: P.border }} />
+      </div>
+      <div className="flex justify-center gap-8">
+        <div className="text-center"><Icon name="shield-check" size={20} style={{ color: P.muted, margin: "0 auto 6px" }} /><div className="text-xs" style={{ color: P.muted }}>أمان وخصوصية</div></div>
+        <div className="text-center"><Icon name="users" size={20} style={{ color: P.muted, margin: "0 auto 6px" }} /><div className="text-xs" style={{ color: P.muted }}>خدمات متكاملة</div></div>
+        <div className="text-center"><Icon name="heart" size={20} style={{ color: P.muted, margin: "0 auto 6px" }} /><div className="text-xs" style={{ color: P.muted }}>دعم مستمر</div></div>
+      </div>
+    </div>
+  </div>;
+}
+
+const ROLE_STYLE = {
+  resident: { icon: "user", grad: "linear-gradient(160deg,#5FC4C0 0%,#2E8B87 100%)" },
+  admin: { icon: "shield-check", grad: "linear-gradient(160deg,#6FA8E8 0%,#2C5FA8 100%)" },
+};
+function LoginForm({ title, role, onSubmit, onBack, P }) {
+  const [id, setId] = useState(""); const [pin, setPin] = useState(""); const [error, setError] = useState(""); const [loading, setLoading] = useState(false);
+  const style = ROLE_STYLE[role] || ROLE_STYLE.resident;
+  const submit = async () => {
+    setError(""); setLoading(true);
+    try { await onSubmit(id, pin, setError); } finally { setLoading(false); }
+  };
+  return <div className="min-h-screen flex items-center justify-center px-5" style={{ backgroundImage: "linear-gradient(160deg,#EAF4FB 0%,#D8ECF5 60%,#CFE8F0 100%)" }}>
+    <div className="w-full max-w-sm rounded-3xl p-8" style={{ background: P.surface, boxShadow: "0 14px 32px rgba(30,58,95,0.12)" }}>
+      <button onClick={onBack} className="flex items-center gap-1 text-sm mb-5" style={{ color: P.muted }}><Icon name="arrow-right" size={16} /> رجوع</button>
+      <div className="w-16 h-16 rounded-full mx-auto mb-4 flex items-center justify-center text-white" style={{ backgroundImage: style.grad }}><Icon name={style.icon} size={26} /></div>
+      <div className="text-2xl font-extrabold mb-7 text-center" style={{ color: P.text }}>{title}</div>
+      <Field P={P} label="رقم الهوية" required><Input P={P} value={id} onChange={setId} placeholder="9 أرقام" /></Field>
+      <Field P={P} label="الرمز السري" required><Input P={P} value={pin} onChange={setPin} placeholder="••••" /></Field>
+      {error && <div className="text-xs font-bold flex items-center gap-1 mb-4" style={{ color: P.danger }}><Icon name="alert-circle" size={13} /> {error}</div>}
+      <button onClick={submit} disabled={loading} className="btn-anim w-full py-4 rounded-2xl text-base font-extrabold text-white mt-2 flex items-center justify-center gap-2" style={{ backgroundImage: style.grad, opacity: loading ? 0.7 : 1 }}>{loading && <Spinner />} دخول</button>
+    </div>
+  </div>;
+}
+
+// ===================== شاشة طلب الانضمام (تتحقق من الموقع أولاً) =====================
+function JoinRequestScreen({ onBack, P }) {
+  const [stage, setStage] = useState("checking"); // checking | denied | form | sent
+  const [coords, setCoords] = useState(null);
+  const [locError, setLocError] = useState("");
+  const [name, setName] = useState(""); const [idNumber, setIdNumber] = useState(""); const [phone, setPhone] = useState("");
+  const [sending, setSending] = useState(false); const [reqId, setReqId] = useState("");
+
+  const checkLocation = () => {
+    setStage("checking"); setLocError("");
+    if (!navigator.geolocation) { setLocError("المتصفح لا يدعم تحديد الموقع"); setStage("denied"); return; }
+    navigator.geolocation.getCurrentPosition(async (pos) => {
+      const { latitude, longitude } = pos.coords;
+      setCoords({ lat: latitude, lng: longitude });
+      try {
+        const res = await apiGet({ action: "checkJoinLocation", lat: latitude, lng: longitude });
+        setStage(res.inside ? "form" : "denied");
+      } catch (e) { setLocError("تعذّر التحقق من الموقع، حاول مجدداً"); setStage("denied"); }
+    }, () => { setLocError("لم تسمح بمشاركة الموقع — التحقق من الموقع إلزامي لتقديم الطلب"); setStage("denied"); }, { enableHighAccuracy: true });
+  };
+  useEffect(() => { checkLocation(); }, []); // eslint-disable-line
+
+  const submitRequest = async () => {
+    setSending(true);
+    try {
+      const res = await apiPost({ action: "submitJoinRequest", name, idNumber, phone, lat: coords.lat, lng: coords.lng });
+      if (res.success) { setReqId(res.requestId); setStage("sent"); } else { setLocError(res.message || "تعذّر إرسال الطلب"); }
+    } catch (e) { setLocError("خطأ بالاتصال، حاول مجدداً"); } finally { setSending(false); }
+  };
+
+  return <div className="min-h-screen flex items-center justify-center px-5" style={{ backgroundImage: "linear-gradient(160deg,#EAF4FB 0%,#D8ECF5 60%,#CFE8F0 100%)" }}>
+    <div className="w-full max-w-sm rounded-3xl p-8 text-center" style={{ background: P.surface, boxShadow: "0 14px 32px rgba(30,58,95,0.12)" }}>
+      <button onClick={onBack} className="flex items-center gap-1 text-sm mb-5" style={{ color: P.muted }}><Icon name="arrow-right" size={16} /> رجوع</button>
+      <div className="w-16 h-16 rounded-full mx-auto mb-4 flex items-center justify-center text-white" style={{ backgroundImage: "linear-gradient(160deg,#8FD19E 0%,#3FA65A 100%)" }}><Icon name="user-plus" size={26} /></div>
+
+      {stage === "checking" && <div className="py-6"><Spinner size={30} /><div className="mt-4 text-sm font-bold" style={{ color: P.text }}>جاري التحقق من موقعك الحالي...</div><div className="text-xs mt-1" style={{ color: P.muted }}>لازم تسمح بمشاركة الموقع الجغرافي</div></div>}
+
+      {stage === "denied" && <div className="py-6">
+        <Icon name="map-pin-off" size={34} style={{ color: P.danger, margin: "0 auto 12px" }} />
+        <div className="text-lg font-extrabold mb-2" style={{ color: P.text }}>لا يمكن تقديم طلب انضمام</div>
+        <div className="text-sm mb-5" style={{ color: P.muted }}>{locError || "موقعك الحالي خارج حدود المخيم — التقديم متاح فقط للمتواجدين داخل المخيم."}</div>
+        <button onClick={checkLocation} className="btn-anim px-5 py-2.5 rounded-2xl text-sm font-bold" style={{ border: `1.5px solid ${P.border}`, color: P.text }}>إعادة المحاولة</button>
+      </div>}
+
+      {stage === "form" && <div className="text-right">
+        <div className="flex items-center gap-2 text-sm font-bold mb-5 justify-center" style={{ color: P.success }}><Icon name="map-pin-check" size={16} /> تم التحقق: أنت داخل حدود المخيم</div>
+        <Field P={P} label="الاسم الرباعي" required><Input P={P} value={name} onChange={setName} placeholder="الاسم الكامل" /></Field>
+        <Field P={P} label="رقم الهوية" required><Input P={P} value={idNumber} onChange={setIdNumber} placeholder="9 أرقام" /></Field>
+        <Field P={P} label="رقم الجوال" required><Input P={P} value={phone} onChange={setPhone} placeholder="05XXXXXXXX" /></Field>
+        {locError && <div className="text-xs font-bold mb-3" style={{ color: P.danger }}>{locError}</div>}
+        <button onClick={submitRequest} disabled={sending} className="btn-anim w-full py-3.5 rounded-2xl text-sm font-extrabold text-white flex items-center justify-center gap-2" style={{ backgroundImage: P.primaryGrad }}>{sending && <Spinner />} إرسال طلب الانضمام</button>
+      </div>}
+
+      {stage === "sent" && <div className="py-6">
+        <Icon name="check-circle" size={34} style={{ color: P.success, margin: "0 auto 12px" }} />
+        <div className="text-lg font-extrabold mb-2" style={{ color: P.text }}>تم إرسال طلبك</div>
+        <div className="text-sm mb-3" style={{ color: P.muted }}>بانتظار مراجعة الإدارة — سيتواصلوا معك مباشرة</div>
+        <div className="inline-block text-xs font-bold px-3 py-2 rounded-xl" style={{ background: P.chipBg, color: P.primarySolid }}>رقم الطلب: {reqId}</div>
+      </div>}
+    </div>
+  </div>;
+}
+
+const REQUIRED_FIELDS = ["name", "birthdate", "gender", "social", "housingGov", "housingAddress", "housingOwnership", "housingStatus", "isDisplaced", "income", "incomeSource", "phone"];
+function getCompletion(f) { let req = [...REQUIRED_FIELDS]; if (f.isDisplaced === "نعم، نازح") req = [...req, "displacedGov", "displacedPlace", "displacedAddress"]; return Math.round((req.filter((k) => f[k] && String(f[k]).trim() !== "").length / req.length) * 100); }
+function isValidPhone(p) { return /^05\d{8}$/.test(p || ""); }
+
+function ResidentForm({ onExit, P, initialFamily }) {
+  const [submitted, setSubmitted] = useState(false);
+  const [refNumber, setRefNumber] = useState("");
+  const [sending, setSending] = useState(false);
+  const [apiError, setApiError] = useState("");
+  const [lightMode, setLightMode] = useState(false);
+  const [largeText, setLargeText] = useState(false);
+  const [showUrgent, setShowUrgent] = useState(false);
+  const [showPin, setShowPin] = useState(false);
+  const [showExitCamp, setShowExitCamp] = useState(false);
+  const [exitSent, setExitSent] = useState(false);
+  const [showNotif, setShowNotif] = useState(false);
+  const [showReview, setShowReview] = useState(false);
+  const [showFaq, setShowFaq] = useState(false);
+  const [openFaq, setOpenFaq] = useState(null);
+  const [validationError, setValidationError] = useState("");
+  const [pinOld, setPinOld] = useState(""); const [pinNew, setPinNew] = useState(""); const [pinConfirm, setPinConfirm] = useState("");
+  const [pinMsg, setPinMsg] = useState("");
+  const initialSnapshot = useRef(null);
+  const qrRef = useRef(null);
+  const [f, setF] = useState(() => ({
+    ...initialFamily,
+    health: initialFamily.health ? String(initialFamily.health).split(/[،,]/).map((s) => s.trim()).filter(Boolean) : [],
+    healthDiseases: [], healthDisabilities: [],
+    idPhoto: null, slipPhoto: null,
+    attachments: {}, members: [],
+  }));
+  if (initialSnapshot.current === null) initialSnapshot.current = { ...f };
+  const update = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const [idDupError, setIdDupError] = useState("");
+
+  const allUsedIds = () => [f.idNumber, ...f.members.map((m) => m.idNumber)].filter(Boolean);
+  const addMember = () => update("members", [...f.members, { idNumber: "", name: "", relation: "", birthdate: "", gender: "", health: [], healthDiseases: [], healthDisabilities: [], lookup: null }]);
+  const updateMember = (i, k, v) => { const c = [...f.members]; c[i][k] = v; update("members", c); };
+  const lookupMember = (i) => {
+    const idVal = f.members[i].idNumber;
+    const others = [f.idNumber, ...f.members.filter((_, idx) => idx !== i).map((m) => m.idNumber)];
+    const c = [...f.members];
+    if (idVal && others.includes(idVal)) { c[i] = { ...c[i], lookup: "duplicate" }; update("members", c); return; }
+    // ملاحظة: البحث التلقائي عن بيانات فرد موجود مسبقاً غير مربوط بعد بالباك إند الحقيقي — تعبئة يدوية حالياً
+    c[i] = { ...c[i], lookup: "new" };
+    update("members", c);
+  };
+  const removeMember = (i) => update("members", f.members.filter((_, idx) => idx !== i));
+
+  useEffect(() => {
+    if (submitted && qrRef.current) {
+      loadScriptOnce("https://unpkg.com/qrcode/build/qrcode.min.js", "QRCode").then(() => {
+        if (window.QRCode) window.QRCode.toCanvas(qrRef.current, refNumber || "REQ", { width: 120 });
+      });
+    }
+  }, [submitted, refNumber]);
+
+  const setAttachment = (type, filename) => update("attachments", { ...f.attachments, [type]: filename });
+  const completion = getCompletion(f);
+  const statusInfo = completion < 100 ? { label: "ناقص", icon: "alert-triangle", color: P.warn } : { label: "بانتظار المراجعة", icon: "clock", color: P.accent };
+  const changedFields = Object.keys(FIELD_LABELS_MAP).filter((k) => {
+    const cur = k === "health" ? f.health.join("، ") : f[k];
+    const initial = k === "health" ? (initialSnapshot.current.health || []).join("، ") : initialSnapshot.current[k];
+    return cur && cur !== initial;
+  });
+
+  const handleReviewOpen = () => { if (f.phone && !isValidPhone(f.phone)) { setValidationError("رقم الجوال يجب أن يبدأ بـ 05 ويتكون من 10 أرقام"); return; } setValidationError(""); setShowReview(true); };
+  const confirmSubmit = async () => {
+    setSending(true); setApiError("");
+    try {
+      const changes = changedFields.map((k) => ({
+        field: FIELD_LABELS_MAP[k],
+        oldValue: k === "health" ? (initialSnapshot.current.health || []).join("، ") : initialSnapshot.current[k],
+        newValue: k === "health" ? f.health.join("، ") : f[k],
+      }));
+      if (changes.length === 0) { setApiError("لا يوجد تعديلات لإرسالها"); setSending(false); return; }
+      const res = await apiPost({ action: "submitEdit", idNumber: f.idNumber, changes });
+      if (res.success) { setRefNumber("REQ-" + Math.floor(100000 + Math.random() * 900000)); setShowReview(false); setSubmitted(true); }
+      else setApiError(res.message || "تعذّر إرسال التعديلات");
+    } catch (e) { setApiError("خطأ بالاتصال بالسيرفر، حاول مجدداً"); }
+    setSending(false);
+  };
+  const submitPinChange = async () => {
+    setPinMsg("");
+    if (pinNew !== pinConfirm) { setPinMsg("الرمز الجديد وتأكيده غير متطابقين"); return; }
+    const res = await apiPost({ action: "changePin", idNumber: f.idNumber, oldPin: pinOld, newPin: pinNew });
+    setPinMsg(res.message || (res.success ? "تم تغيير الرمز السري بنجاح" : "حدث خطأ"));
+  };
+  const submitExitCamp = async () => {
+    await apiPost({ action: "submitEdit", idNumber: f.idNumber, changes: [{ field: "طلب خروج من المخيم", oldValue: "لا", newValue: "نعم" }] });
+    setExitSent(true);
+  };
+
+  if (submitted) {
+    return <div style={{ background: P.bg, minHeight: "100vh" }}>
+      <div className="flex items-center justify-center px-5" style={{ minHeight: "100vh" }}>
+        <div className="text-center">
+          <div className="w-20 h-20 rounded-full mx-auto mb-5 flex items-center justify-center" style={{ backgroundImage: P.primaryGrad }}><Icon name="check" size={34} style={{ color: "#fff" }} /></div>
+          <div className="text-2xl font-extrabold mb-2" style={{ color: P.text }}>تم إرسال التعديلات فعلياً</div>
+          <div className="text-sm mb-3" style={{ color: P.muted }}>محفوظة كـ"معلّقة" بانتظار موافقة مدير المخيم</div>
+          <canvas ref={qrRef} className="mx-auto my-3 no-print"></canvas>
+          <div className="inline-block text-sm font-bold px-4 py-2 rounded-xl mb-6" style={{ background: P.chipBg, color: P.primarySolid }}>الرقم المرجعي: {refNumber}</div>
+          <div className="flex gap-3 justify-center no-print"><button onClick={() => window.print()} className="btn-anim flex items-center gap-2 px-5 py-3 rounded-2xl text-sm font-bold" style={{ border: `1.5px solid ${P.primarySolid}`, color: P.text }}><Icon name="printer" size={16} /> طباعة</button><button onClick={onExit} className="btn-anim px-5 py-3 rounded-2xl text-sm font-bold text-white" style={{ backgroundImage: P.primaryGrad }}>رجوع للرئيسية</button></div>
+        </div>
+      </div>
+    </div>;
+  }
+
+  return (
+    <div style={{ background: P.bg, minHeight: "100vh", fontSize: largeText ? "1.12em" : "1em" }}>
+      <div className="px-5 py-6 sticky top-0 z-10 no-print" style={{ backgroundImage: "linear-gradient(160deg,#5FC4C0 0%,#2E8B87 100%)" }}>
+        <div className="max-w-lg mx-auto">
+          <div className="flex items-center justify-between mb-4">
+            <div><div className="text-xl font-extrabold text-white">أهلاً {f.name || "بك"}</div><div className="text-xs flex items-center gap-1 mt-1" style={{ color: "rgba(255,255,255,0.85)" }}><Icon name="link-2" size={12} /> بياناتك محمّلة من قاعدة البيانات الفعلية</div></div>
+            <div className="flex items-center gap-2">
+              <button onClick={() => setShowFaq(true)} className="btn-anim w-10 h-10 rounded-full flex items-center justify-center text-white" style={{ background: "rgba(255,255,255,0.18)" }}><Icon name="help-circle" size={17} /></button>
+              <button onClick={() => setLargeText((v) => !v)} className="btn-anim w-10 h-10 rounded-full flex items-center justify-center text-white" style={{ background: largeText ? "rgba(255,255,255,0.35)" : "rgba(255,255,255,0.18)" }}><Icon name="type" size={16} /></button>
+              <button onClick={onExit} className="btn-anim text-xs px-3 py-2 rounded-full text-white" style={{ background: "rgba(255,255,255,0.18)" }}>خروج</button>
+            </div>
+          </div>
+          <div className="flex items-center justify-between text-xs text-white mb-1"><span className="flex items-center gap-1"><Icon name={statusInfo.icon} size={13} /> {statusInfo.label}</span><b>{completion}%</b></div>
+          <div className="h-2 rounded-full" style={{ background: "rgba(255,255,255,0.25)" }}><div className="h-2 rounded-full" style={{ background: "#fff", width: `${completion}%`, transition: "width .3s" }} /></div>
+        </div>
+      </div>
+
+      <div className="max-w-lg mx-auto px-5 pt-5 no-print grid grid-cols-2 gap-3">
+        <button onClick={() => setShowUrgent(true)} className="btn-anim flex items-center justify-center gap-2 py-3.5 rounded-2xl text-sm font-bold text-white" style={{ backgroundImage: P.accentGrad }}><Icon name="siren" size={16} /> طلب مساعدة عاجلة</button>
+        <button onClick={() => setShowPin(true)} className="btn-anim flex items-center justify-center gap-2 py-3.5 rounded-2xl text-sm font-bold" style={{ border: `1.5px solid ${P.border}`, color: P.text, background: P.surface }}><Icon name="key-round" size={16} /> تغيير الرمز السري</button>
+      </div>
+
+      <div className="max-w-lg mx-auto px-5 pt-5 pb-28">
+        <Card P={P} icon="user" title="بيانات رب الأسرة" right={<span className="flex items-center gap-1 text-xs px-2 py-1 rounded-full" style={{ background: P.chipBg, color: P.success }}><Icon name="database" size={12} /> بيانات حقيقية</span>}>
+          <Field P={P} label="الاسم الرباعي" required><Input P={P} value={f.name} onChange={(v) => update("name", v)} /></Field>
+          <Field P={P} label="رقم الهوية"><Input P={P} value={f.idNumber} disabled /></Field>
+          <Field P={P} label="المربع"><Input P={P} value={f.square} disabled /></Field>
+          <Field P={P} label="تاريخ الميلاد" required><Input P={P} value={f.birthdate} onChange={(v) => update("birthdate", v)} placeholder="YYYY/MM/DD" /></Field>
+          <Field P={P} label="الجنس" required><RadioGroup P={P} value={f.gender} onChange={(v) => update("gender", v)} options={["ذكر", "أنثى"]} /></Field>
+          <Field P={P} label="الحالة الاجتماعية" required><Select P={P} value={f.social} onChange={(v) => update("social", v)} options={["أعزب/عزباء", "متزوج/ة", "أرمل/ة", "مطلّق/ة"]} /></Field>
+        </Card>
+
+        <Card P={P} icon="heart-pulse" title="الحالة الصحية لرب الأسرة">
+          <CheckboxGroup P={P} value={f.health} onChange={(v) => update("health", v)} options={HEALTH_OPTIONS} />
+          <HealthDetail P={P} health={f.health} diseases={f.healthDiseases} disabilities={f.healthDisabilities} onDiseases={(v) => update("healthDiseases", v)} onDisabilities={(v) => update("healthDisabilities", v)} />
+        </Card>
+
+        <Card P={P} icon="home" title="السكن والنزوح">
+          <Field P={P} label="المحافظة الأصلية" required><Select P={P} value={f.housingGov} onChange={(v) => update("housingGov", v)} options={["خانيونس", "رفح", "غزة", "الوسطى", "الشمال"]} /></Field>
+          <Field P={P} label="العنوان الأصلي بالتفصيل" required><TextArea P={P} value={f.housingAddress} onChange={(v) => update("housingAddress", v)} rows={2} /></Field>
+          <Field P={P} label="ملكية السكن الأصلي" required><Select P={P} value={f.housingOwnership} onChange={(v) => update("housingOwnership", v)} options={["ملك", "إيجار", "سكن مع الأهل"]} /></Field>
+          <Field P={P} label="حالة السكن الأصلي حالياً" required><Select P={P} value={f.housingStatus} onChange={(v) => update("housingStatus", v)} options={["سليم", "متضرر جزئياً", "مدمر جزئياً", "مدمر كلياً"]} /></Field>
+          <div className="my-5" style={{ borderTop: `1px dashed ${P.border}` }} />
+          <Field P={P} label="هل أنت نازح حالياً؟" required><RadioGroup P={P} value={f.isDisplaced} onChange={(v) => update("isDisplaced", v)} options={["نعم، نازح", "لا، مقيم في منزلي"]} /></Field>
+          {f.isDisplaced === "نعم، نازح" && <div>
+            <Field P={P} label="محافظة النزوح" required><Select P={P} value={f.displacedGov} onChange={(v) => update("displacedGov", v)} options={["خانيونس", "رفح", "غزة", "الوسطى", "الشمال"]} /></Field>
+            <Field P={P} label="مكان النزوح" required><Select P={P} value={f.displacedPlace} onChange={(v) => update("displacedPlace", v)} options={["خيمة عشوائية", "مخيم منظم", "منزل مستأجر", "عند أقارب", "مركز إيواء"]} /></Field>
+            <Field P={P} label="عنوان النزوح بالتفصيل" required><TextArea P={P} value={f.displacedAddress} onChange={(v) => update("displacedAddress", v)} rows={2} /></Field>
+          </div>}
+        </Card>
+
+        <Card P={P} icon="banknote" title="الدخل ومصادره">
+          <Field P={P} label="مستوى الدخل الشهري (شيكل)" required><Select P={P} value={f.income} onChange={(v) => update("income", v)} options={["لا يوجد دخل (صفر)", "أقل من 500", "500 - 1000", "1000 - 2000", "أكثر من 2000"]} /></Field>
+          <Field P={P} label="مصدر الدخل الحالي" required><Select P={P} value={f.incomeSource} onChange={(v) => update("incomeSource", v)} options={["لا يوجد مصدر", "عمل حر", "موظف", "مساعدات", "تجارة", "أخرى"]} /></Field>
+        </Card>
+
+        <Card P={P} icon="phone" title="أرقام التواصل">
+          <Field P={P} label="جوال للتواصل (أساسي)" required><Input P={P} value={f.phone} onChange={(v) => update("phone", v)} placeholder="05XXXXXXXX" /></Field>
+          <Field P={P} label="جوال بديل (إن وجد)"><Input P={P} value={f.altPhone} onChange={(v) => update("altPhone", v)} placeholder="05XXXXXXXX" /></Field>
+          {validationError && <div className="text-xs font-bold flex items-center gap-1 mb-3" style={{ color: P.danger }}><Icon name="alert-circle" size={13} /> {validationError}</div>}
+          <Field P={P} label="طريقة التواصل المفضلة"><RadioGroup P={P} value={f.commChannel || "SMS"} onChange={(v) => update("commChannel", v)} options={["SMS", "واتساب", "بريد إلكتروني"]} /></Field>
+        </Card>
+
+        <Card P={P} icon="id-card" title="صورة الهوية والسليب المرفق">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="rounded-2xl p-6 text-center" style={{ border: `2px dashed ${P.border}`, background: P.surface2 }}>
+              <Icon name="cloud-upload" size={24} style={{ color: P.muted, margin: "0 auto 8px" }} />
+              <div className="text-xs font-bold mb-2" style={{ color: P.text }}>صورة الهوية</div>
+              <label className="btn-anim inline-block px-4 py-2 rounded-xl text-xs font-bold cursor-pointer text-white" style={{ backgroundImage: P.primaryGrad }}>اختيار ملف<input type="file" accept="image/*" className="hidden" onChange={(e) => update("idPhoto", e.target.files[0]?.name)} /></label>
+              {f.idPhoto && <div className="text-xs mt-2" style={{ color: P.success }}>{f.idPhoto}</div>}
+            </div>
+            <div className="rounded-2xl p-6 text-center" style={{ border: `2px dashed ${P.border}`, background: P.surface2 }}>
+              <Icon name="file-text" size={24} style={{ color: P.muted, margin: "0 auto 8px" }} />
+              <div className="text-xs font-bold mb-2" style={{ color: P.text }}>صورة السليب المرفق</div>
+              <label className="btn-anim inline-block px-4 py-2 rounded-xl text-xs font-bold cursor-pointer text-white" style={{ backgroundImage: P.primaryGrad }}>اختيار ملف<input type="file" accept="image/*" className="hidden" onChange={(e) => update("slipPhoto", e.target.files[0]?.name)} /></label>
+              {f.slipPhoto && <div className="text-xs mt-2" style={{ color: P.success }}>{f.slipPhoto}</div>}
+            </div>
+          </div>
+        </Card>
+
+        <Card P={P} icon="users" title={`أفراد الأسرة (${f.members.length})`}>
+          <div className="space-y-4 mb-4">
+            {f.members.map((m, idx) => (
+              <div key={idx} className="p-4 rounded-2xl" style={{ border: `1.5px solid ${P.border}` }}>
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-xs font-bold" style={{ color: P.muted }}>فرد {idx + 1}</span>
+                  <button onClick={() => removeMember(idx)} className="flex items-center gap-1 text-xs" style={{ color: P.danger }}><Icon name="trash-2" size={13} /> حذف</button>
+                </div>
+                <div className="text-xs font-bold mb-1" style={{ color: P.text }}>رقم هوية الفرد</div>
+                <div className="flex gap-2 mb-1">
+                  <input value={m.idNumber} onChange={(e) => updateMember(idx, "idNumber", e.target.value)} placeholder="رقم الهوية" className="flex-1 px-3 py-2.5 rounded-xl text-sm" style={{ border: `1px solid ${P.border}`, background: P.surface, color: P.text }} />
+                  <button onClick={() => lookupMember(idx)} className="btn-anim flex items-center gap-1 px-3 py-2.5 rounded-xl text-xs font-bold text-white" style={{ backgroundImage: P.primaryGrad }}><Icon name="search" size={13} /> تحقق</button>
+                </div>
+                {m.lookup === "duplicate" && <div className="flex items-center gap-1 text-xs mb-2" style={{ color: P.danger }}><Icon name="alert-circle" size={13} /> رقم الهوية هذا مستخدم مسبقاً بنفس الأسرة — يجب أن يكون فريداً</div>}
+                {m.lookup === "new" && <div className="flex items-center gap-1 text-xs mb-2" style={{ color: P.warn }}><Icon name="alert-triangle" size={13} /> تعبئة يدوية</div>}
+                <input value={m.name} onChange={(e) => updateMember(idx, "name", e.target.value)} placeholder="الاسم" className="w-full mb-2 px-3 py-2.5 rounded-xl text-sm" style={{ border: `1px solid ${P.border}`, background: P.surface, color: P.text }} />
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                  <input value={m.relation} onChange={(e) => updateMember(idx, "relation", e.target.value)} placeholder="صلة القرابة" className="px-3 py-2.5 rounded-xl text-sm" style={{ border: `1px solid ${P.border}`, background: P.surface, color: P.text }} />
+                  <input value={m.birthdate} onChange={(e) => updateMember(idx, "birthdate", e.target.value)} placeholder="تاريخ الميلاد" className="px-3 py-2.5 rounded-xl text-sm" style={{ border: `1px solid ${P.border}`, background: P.surface, color: P.text }} />
+                </div>
+                <div className="text-xs font-bold mb-1" style={{ color: P.text }}>الجنس</div>
+                <div className="mb-3"><RadioGroup P={P} value={m.gender} onChange={(v) => updateMember(idx, "gender", v)} options={["ذكر", "أنثى"]} /></div>
+                <div className="text-xs font-bold mb-1" style={{ color: P.text }}>الحالة الصحية</div>
+                <CheckboxGroup P={P} value={m.health} onChange={(v) => updateMember(idx, "health", v)} options={HEALTH_OPTIONS} />
+                <HealthDetail P={P} health={m.health} diseases={m.healthDiseases} disabilities={m.healthDisabilities} onDiseases={(v) => updateMember(idx, "healthDiseases", v)} onDisabilities={(v) => updateMember(idx, "healthDisabilities", v)} />
+              </div>
+            ))}
+          </div>
+          <button onClick={addMember} className="btn-anim w-full flex items-center justify-center gap-2 py-3 rounded-2xl text-sm font-bold" style={{ border: `1.5px dashed ${P.primarySolid}`, color: P.primarySolid }}><Icon name="plus" size={15} /> إضافة فرد</button>
+        </Card>
+
+        <Card P={P} icon="paperclip" title="مرفقات إضافية">
+          <div className="space-y-3">{ATTACHMENT_TYPES.map((type) => (
+            <div key={type} className="flex items-center justify-between px-4 py-3 rounded-2xl" style={{ border: `1.5px solid ${P.border}` }}>
+              <div className="text-sm font-bold" style={{ color: P.text }}>{type}</div>
+              {f.attachments[type] ? (<span className="flex items-center gap-1 text-xs" style={{ color: P.success }}><Icon name="check-circle" size={14} /> {f.attachments[type]}</span>) : (<label className="btn-anim text-xs font-bold px-3 py-2 rounded-lg cursor-pointer" style={{ background: P.chipBg, color: P.primarySolid }}>إرفاق<input type="file" className="hidden" onChange={(e) => setAttachment(type, e.target.files[0]?.name)} /></label>)}
+            </div>))}</div>
+        </Card>
+
+        <Card P={P} icon="message-square" title="ملاحظة لمدير المخيم (اختياري)"><TextArea P={P} value={f.adminNote} onChange={(v) => update("adminNote", v)} rows={3} /></Card>
+
+        <button onClick={() => setShowExitCamp(true)} className="btn-anim w-full flex items-center justify-center gap-2 py-4 rounded-2xl text-sm font-bold mb-2" style={{ border: `1.5px solid ${P.danger}`, color: P.danger, background: P.surface }}><Icon name="log-out" size={16} /> خروج من المخيم</button>
+      </div>
+
+      <div className="fixed bottom-0 left-0 right-0 px-5 py-4 no-print" style={{ background: P.surface, borderTop: `1px solid ${P.border}` }}>
+        <div className="max-w-lg mx-auto">{apiError && <div className="text-xs font-bold mb-2 text-center" style={{ color: P.danger }}>{apiError}</div>}<button onClick={handleReviewOpen} className="btn-anim w-full py-4 rounded-2xl text-base font-extrabold text-white" style={{ backgroundImage: P.primaryGrad }}>حفظ وإرسال البيانات</button></div>
+      </div>
+
+      {showFaq && (<Modal P={P} title="أسئلة شائعة" icon="help-circle" onClose={() => setShowFaq(false)}>
+        <div className="space-y-2 mb-5">{FAQ.map((item, i) => (<div key={i} className="rounded-2xl overflow-hidden" style={{ border: `1px solid ${P.border}` }}><button onClick={() => setOpenFaq(openFaq === i ? null : i)} className="w-full text-right px-4 py-3 flex justify-between items-center text-sm font-bold" style={{ color: P.text }}>{item.q}<Icon name={openFaq === i ? "chevron-up" : "chevron-down"} size={15} /></button>{openFaq === i && <div className="px-4 pb-3 text-sm" style={{ color: P.muted }}>{item.a}</div>}</div>))}</div>
+        <div className="rounded-2xl p-4 flex items-center gap-3" style={{ background: P.chipBg }}><Icon name="phone-call" size={18} style={{ color: P.primarySolid }} /><div><div className="text-sm font-bold" style={{ color: P.text }}>تواصل مع لجنة المخيم</div><div className="text-xs" style={{ color: P.muted }}>0595513130</div></div></div>
+      </Modal>)}
+      {showUrgent && (<Modal P={P} title="طلب مساعدة عاجلة" icon="siren" onClose={() => setShowUrgent(false)}><div className="text-sm" style={{ color: P.text }}>هذه الميزة (إرسال مباشر لمدير المخيم) بانتظار ربطها بخدمة تنبيهات فورية — حالياً الرجاء استخدام قسم "ملاحظة لمدير المخيم" أو التواصل المباشر.</div></Modal>)}
+      {showExitCamp && (<Modal P={P} title="خروج من المخيم" icon="log-out" onClose={() => { setShowExitCamp(false); setExitSent(false); }}>
+        {exitSent ? (<div className="text-center py-4"><Icon name="check-circle" size={36} style={{ color: P.success, margin: "0 auto 10px" }} /><div className="font-bold" style={{ color: P.text }}>تم إرسال طلب الخروج، سيراجعه مدير المخيم</div></div>)
+          : (<div><div className="text-sm mb-5" style={{ color: P.text }}>هل أنت متأكد إنك بدك تسجّل خروج أسرتك من المخيم؟ هذا الطلب رح يوصل مدير المخيم للمراجعة والتأكيد.</div>
+            <button onClick={submitExitCamp} className="btn-anim w-full py-3.5 rounded-2xl text-sm font-extrabold text-white" style={{ background: P.danger }}>تأكيد طلب الخروج</button></div>)}
+      </Modal>)}
+      {showPin && (<Modal P={P} title="تغيير الرمز السري" icon="key-round" onClose={() => { setShowPin(false); setPinMsg(""); }}>
+        <Field P={P} label="الرمز الحالي" required><Input P={P} type="password" value={pinOld} onChange={setPinOld} placeholder="••••" /></Field>
+        <Field P={P} label="الرمز الجديد" required><Input P={P} type="password" value={pinNew} onChange={setPinNew} placeholder="••••" /></Field>
+        <Field P={P} label="تأكيد الرمز الجديد" required><Input P={P} type="password" value={pinConfirm} onChange={setPinConfirm} placeholder="••••" /></Field>
+        {pinMsg && <div className="text-xs font-bold mb-3" style={{ color: pinMsg.includes("بنجاح") ? P.success : P.danger }}>{pinMsg}</div>}
+        <button onClick={submitPinChange} className="btn-anim w-full py-3.5 rounded-2xl text-sm font-extrabold text-white" style={{ backgroundImage: P.primaryGrad }}>حفظ الرمز الجديد</button>
+      </Modal>)}
+      {showReview && (<Modal P={P} title="مراجعة قبل الإرسال" icon="clipboard-check" onClose={() => setShowReview(false)}>
+        {changedFields.length === 0 ? (<div className="text-sm mb-4" style={{ color: P.muted }}>لا يوجد تعديلات جديدة.</div>) : (<div className="space-y-2 mb-5 max-h-64 overflow-y-auto">{changedFields.map((k) => (<div key={k} className="flex justify-between text-sm py-2" style={{ borderBottom: `1px solid ${P.border}` }}><span style={{ color: P.muted }}>{FIELD_LABELS_MAP[k]}</span><span className="font-bold" style={{ color: P.text }}>{k === "health" ? f.health.join("، ") : f[k]}</span></div>))}</div>)}
+        {apiError && <div className="text-xs font-bold mb-3" style={{ color: P.danger }}>{apiError}</div>}
+        <button onClick={confirmSubmit} disabled={sending} className="btn-anim w-full py-3.5 rounded-2xl text-sm font-extrabold text-white flex items-center justify-center gap-2" style={{ backgroundImage: P.primaryGrad }}>{sending && <Spinner />} تأكيد الإرسال</button>
+      </Modal>)}
+    </div>
+  );
+}
+
+function StatCard({ P, icon, label, value, color }) { return <div className="rounded-3xl p-5" style={{ background: P.surface, border: `1px solid ${P.border}` }}><div className="w-10 h-10 rounded-xl flex items-center justify-center mb-3" style={{ background: P.chipBg, color: color || P.primarySolid }}><Icon name={icon} size={18} /></div><div className="text-2xl font-extrabold" style={{ color: P.text }}>{value}</div><div className="text-xs" style={{ color: P.muted }}>{label}</div></div>; }
+
+function AdminDashboard({ onExit, theme, setTheme, P, admin }) {
+  const [search, setSearch] = useState("");
+  const [families, setFamilies] = useState([]);
+  const [pendingEdits, setPendingEdits] = useState([]);
+  const [joinRequests, setJoinRequests] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [openId, setOpenId] = useState(null);
+  const [squareView, setSquareView] = useState("");
+  const [selected, setSelected] = useState({});
+  const [showStats, setShowStats] = useState(false);
+  const [editFamily, setEditFamily] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+
+  const loadAll = async () => {
+    setLoading(true);
+    const [fam, edits, joins] = await Promise.all([apiGet({ action: "listFamilies" }), apiGet({ action: "listPendingEdits" }), apiGet({ action: "listJoinRequests" })]);
+    if (fam.success) setFamilies(fam.families);
+    if (edits.success) setPendingEdits(edits.edits);
+    if (joins.success) setJoinRequests(joins.requests.filter((r) => r.status === "معلق"));
+    setLoading(false);
+  };
+  useEffect(() => { loadAll(); }, []); // eslint-disable-line
+
+  const filtered = families
+    .filter((f) => String(f.name).includes(search) || String(f.idNumber).includes(search) || String(f.phone).includes(search))
+    .filter((f) => !squareView || f.square === squareView);
+  const totalMembers = families.reduce((s, f) => s + (Number(f.membersCount) || 0), 0);
+  const verifiedCount = families.filter((f) => f.verified === "نعم" || f.verified === true).length;
+  const completionRate = families.length ? Math.round((verifiedCount / families.length) * 100) : 0;
+  const squares = [...new Set(families.map((f) => f.square).filter(Boolean))];
+  const bySquare = squares.map((sq) => ({ square: sq, count: families.filter((f) => f.square === sq).length }));
+  const byHousing = ["سليم", "متضرر جزئياً", "مدمر جزئياً", "مدمر كلياً"].map((h) => ({ label: h, count: families.filter((f) => f.housingStatus === h).length }));
+  const byIncome = ["لا يوجد دخل (صفر)", "أقل من 500", "500 - 1000", "1000 - 2000", "أكثر من 2000"].map((h) => ({ label: h, count: families.filter((f) => f.income === h).length }));
+  const withHealthIssue = families.filter((f) => f.health && f.health !== "سليم تماماً" && f.health !== "").length;
+  const demographicStats = computeStats(filtered); // scoped to the currently selected square (or all)
+
+  const toggleSelect = (id) => setSelected((p) => ({ ...p, [id]: !p[id] }));
+  const selectedCount = Object.values(selected).filter(Boolean).length;
+
+  const resolveEdit = async (editId, decision) => { await apiPost({ action: "resolveEdit", editId, decision }); loadAll(); };
+  const resolveJoin = async (requestId, decision) => { await apiPost({ action: "resolveJoinRequest", requestId, decision }); loadAll(); };
+  const deleteFamily = async (idNumber) => { await apiPost({ action: "deleteFamily", idNumber }); loadAll(); };
+
+  const exportExcel = async (onlySelected) => {
+    await loadScriptOnce("https://unpkg.com/xlsx/dist/xlsx.full.min.js", "XLSX");
+    const source = onlySelected ? filtered.filter((f) => selected[f.idNumber]) : filtered;
+    const rows = source.map((f) => ({ الاسم: f.name, الهوية: f.idNumber, الجوال: f.phone, المربع: f.square, عدد_الأفراد: f.membersCount, الدخل: f.income, حالة_السكن: f.housingStatus, تم_التحقق: f.verified }));
+    const ws = XLSX.utils.json_to_sheet(rows); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "الأسر"); XLSX.writeFile(wb, onlySelected ? "families-selected.xlsx" : "families.xlsx");
+  };
+  const exportStatsReport = async () => {
+    await loadScriptOnce("https://unpkg.com/xlsx/dist/xlsx.full.min.js", "XLSX");
+    const wb = XLSX.utils.book_new();
+    const overallRows = [
+      { الفئة: "عدد الأسر", العدد: families.length }, { الفئة: "إجمالي الأفراد", العدد: totalMembers },
+      ...Object.keys(STATS_LABELS).map((k) => ({ الفئة: STATS_LABELS[k], العدد: computeStats(families)[k] })),
+    ];
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(overallRows), "المخيم ككل");
+    squares.forEach((sq) => {
+      const famsInSq = families.filter((f) => f.square === sq);
+      const st = computeStats(famsInSq);
+      const rows = [{ الفئة: "عدد الأسر", العدد: famsInSq.length }, ...Object.keys(STATS_LABELS).map((k) => ({ الفئة: STATS_LABELS[k], العدد: st[k] }))];
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), sq.slice(0, 30));
+    });
+    XLSX.writeFile(wb, "تقرير-احصائيات-المخيم.xlsx");
+  };
+
+  if (loading) return <Loading P={P} />;
+
+  return (
+    <div style={{ background: P.bg, minHeight: "100vh" }}>
+      <div className="px-5 py-6 no-print" style={{ backgroundImage: "linear-gradient(160deg,#6FA8E8 0%,#2C5FA8 100%)" }}>
+        <div className="max-w-2xl mx-auto flex items-center justify-between">
+          <div><div className="text-xl font-extrabold text-white flex items-center gap-2"><Icon name="shield-check" /> لوحة {admin.role === "مالك" ? "المالك" : "المدير"}</div><div className="text-xs" style={{ color: "rgba(255,255,255,0.8)" }}>{admin.name} · {admin.role}</div></div>
+          <div className="flex items-center gap-2"><button onClick={loadAll} className="btn-anim w-10 h-10 rounded-full flex items-center justify-center text-white" style={{ background: "rgba(255,255,255,0.18)" }}><Icon name="refresh-cw" size={16} /></button><ThemeToggle theme={theme} setTheme={setTheme} P={{ ...P, chipBg: "rgba(255,255,255,0.18)", text: "#fff" }} /><button onClick={onExit} className="btn-anim text-xs px-3 py-2 rounded-full text-white" style={{ background: "rgba(255,255,255,0.18)" }}>خروج</button></div>
+        </div>
+      </div>
+
+      <div className="max-w-2xl mx-auto px-5 py-6 pb-16">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+          <StatCard P={P} icon="users" label="عدد الأسر" value={families.length} />
+          <StatCard P={P} icon="user" label="إجمالي الأفراد" value={totalMembers} />
+          <StatCard P={P} icon="badge-check" label="نسبة الاكتمال" value={completionRate + "%"} color={P.success} />
+          <StatCard P={P} icon="git-pull-request-arrow" label="بانتظار الموافقة" value={pendingEdits.length} color={P.warn} />
+        </div>
+
+        {squares.length > 0 && (
+          <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
+            <button onClick={() => setSquareView("")} className="btn-anim px-4 py-2 rounded-full text-xs font-bold shrink-0" style={{ background: !squareView ? P.primarySolid : P.surface, color: !squareView ? "#fff" : P.text, border: `1px solid ${P.border}` }}>كل المخيم ({families.length})</button>
+            {bySquare.map((s) => (
+              <button key={s.square} onClick={() => setSquareView(s.square)} className="btn-anim px-4 py-2 rounded-full text-xs font-bold shrink-0" style={{ background: squareView === s.square ? P.primarySolid : P.surface, color: squareView === s.square ? "#fff" : P.text, border: `1px solid ${P.border}` }}>{s.square} ({s.count})</button>
+            ))}
+          </div>
+        )}
+
+        <button onClick={() => setShowStats((v) => !v)} className="btn-anim w-full flex items-center justify-between px-5 py-3.5 rounded-2xl text-sm font-bold mb-4" style={{ background: P.surface, border: `1px solid ${P.border}`, color: P.text }}>
+          <span className="flex items-center gap-2"><Icon name="bar-chart-3" size={16} /> تقرير وإحصائيات شاملة {squareView ? `— ${squareView}` : "— كل المخيم"}</span><Icon name={showStats ? "chevron-up" : "chevron-down"} size={16} />
+        </button>
+        {showStats && (
+          <Card P={P} icon="bar-chart-3" title="التوزيع التفصيلي" right={<button onClick={exportStatsReport} className="btn-anim flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-lg text-white" style={{ background: P.success }}><Icon name="file-spreadsheet" size={12} /> تصدير التقرير</button>}>
+            <div className="rounded-xl px-4 py-3 mb-4 text-xs flex items-start gap-2" style={{ background: P.chipBg, color: P.muted }}>
+              <Icon name="info" size={14} style={{ marginTop: 2, flexShrink: 0 }} />
+              <span>هذه الأرقام محسوبة حالياً من بيانات <b>رب الأسرة فقط</b> — العدّ الكامل لكل أفراد الأسرة (زوجات، أبناء) بانتظار ربط تخزين "أفراد الأسرة" بالباك إند.</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2 mb-4">
+              {Object.keys(STATS_LABELS).map((k) => (
+                <div key={k} className="flex justify-between items-center px-3 py-2 rounded-xl" style={{ background: P.surface2 }}>
+                  <span className="text-xs" style={{ color: P.text }}>{STATS_LABELS[k]}</span><span className="font-extrabold text-sm" style={{ color: P.primarySolid }}>{demographicStats[k]}</span>
+                </div>
+              ))}
+            </div>
+            <div className="text-xs font-bold mb-2" style={{ color: P.muted }}>حسب حالة السكن</div>
+            <div className="space-y-1 mb-4">{byHousing.map((s) => (<div key={s.label} className="flex justify-between text-sm py-1"><span style={{ color: P.text }}>{s.label}</span><span className="font-bold" style={{ color: P.primarySolid }}>{s.count}</span></div>))}</div>
+            <div className="text-xs font-bold mb-2" style={{ color: P.muted }}>حسب مستوى الدخل</div>
+            <div className="space-y-1">{byIncome.map((s) => (<div key={s.label} className="flex justify-between text-sm py-1"><span style={{ color: P.text }}>{s.label}</span><span className="font-bold" style={{ color: P.primarySolid }}>{s.count}</span></div>))}</div>
+          </Card>
+        )}
+
+        {joinRequests.length > 0 && (
+          <Card P={P} icon="user-plus" title={`طلبات انضمام جديدة (${joinRequests.length})`}>
+            <div className="space-y-3">{joinRequests.map((r) => (
+              <div key={r.requestId} className="p-4 rounded-2xl" style={{ border: `1.5px solid ${P.border}` }}>
+                <div className="flex justify-between items-center mb-1"><span className="font-bold text-sm" style={{ color: P.text }}>{r.name}</span><span className="text-xs" style={{ color: P.muted }}>{r.date}</span></div>
+                <div className="text-xs mb-3" style={{ color: P.muted }}>هوية: {r.idNumber} · جوال: {r.phone}</div>
+                <div className="grid grid-cols-2 gap-2"><button onClick={() => resolveJoin(r.requestId, "مقبول")} className="btn-anim py-2 rounded-xl text-xs font-bold text-white" style={{ background: P.success }}>قبول ✅</button><button onClick={() => resolveJoin(r.requestId, "مرفوض")} className="btn-anim py-2 rounded-xl text-xs font-bold text-white" style={{ background: P.danger }}>رفض ❌</button></div>
+              </div>))}</div>
+          </Card>
+        )}
+
+        {pendingEdits.length > 0 && (
+          <Card P={P} icon="clipboard-check" title={`تعديلات بانتظار الموافقة (${pendingEdits.length})`}>
+            <div className="space-y-3">{pendingEdits.map((p) => (
+              <div key={p.editId} className="p-4 rounded-2xl" style={{ border: `1.5px solid ${P.border}` }}>
+                <div className="flex justify-between items-center mb-2"><span className="font-bold text-sm" style={{ color: P.text }}>هوية: {p.idNumber}</span><span className="text-xs" style={{ color: P.muted }}>{p.date}</span></div>
+                <div className="text-xs mb-3"><span style={{ color: P.muted }}>{p.field}: </span><span style={{ color: P.text }}>{p.oldValue || "—"} ← <b>{p.newValue}</b></span></div>
+                <div className="grid grid-cols-2 gap-2"><button onClick={() => resolveEdit(p.editId, "معتمد")} className="btn-anim py-2 rounded-xl text-xs font-bold text-white" style={{ background: P.success }}>اعتماد ✅</button><button onClick={() => resolveEdit(p.editId, "مرفوض")} className="btn-anim py-2 rounded-xl text-xs font-bold text-white" style={{ background: P.danger }}>رفض ❌</button></div>
+              </div>))}</div>
+          </Card>
+        )}
+
+        <div className="flex flex-wrap gap-2 mb-4 no-print">
+          <button onClick={() => exportExcel(false)} className="btn-anim flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold text-white" style={{ backgroundImage: P.primaryGrad }}><Icon name="file-spreadsheet" size={15} /> تصدير الكل ({filtered.length})</button>
+          {selectedCount > 0 && <button onClick={() => exportExcel(true)} className="btn-anim flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold text-white" style={{ background: P.accent }}><Icon name="file-check-2" size={15} /> تصدير المحدد ({selectedCount})</button>}
+        </div>
+
+        <div className="rounded-2xl p-4 mb-4 no-print" style={{ background: P.surface, border: `1px solid ${P.border}` }}>
+          <div className="relative"><Icon name="search" size={16} style={{ position: "absolute", top: 14, right: 14, color: P.muted }} /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="بحث بالاسم أو الهوية أو رقم الجوال" className="w-full pr-10 pl-3 py-3 rounded-xl text-sm" style={{ border: `1.5px solid ${P.border}`, background: P.surface2, color: P.text }} /></div>
+        </div>
+
+        <div className="space-y-3">
+          {filtered.map((f) => (
+            <div key={f.idNumber} className="rounded-2xl overflow-hidden flex items-stretch" style={{ border: `1px solid ${P.border}`, background: P.surface }}>
+              <label className="flex items-center px-3" onClick={(e) => e.stopPropagation()}>
+                <input type="checkbox" checked={!!selected[f.idNumber]} onChange={() => toggleSelect(f.idNumber)} />
+              </label>
+              <div className="flex-1">
+              <button onClick={() => setOpenId(openId === f.idNumber ? null : f.idNumber)} className="w-full px-2 py-4 flex justify-between items-center text-right">
+                <div><div className="font-bold text-sm" style={{ color: P.text }}>{f.name}</div><div className="text-xs" style={{ color: P.muted }}>{f.housingAddress} · {f.square}</div></div>
+                <div className="text-left text-xs">{f.verified === "نعم" ? <span className="flex items-center gap-1" style={{ color: P.success }}><Icon name="badge-check" size={13} /> تم التحقق</span> : <span className="flex items-center gap-1" style={{ color: P.warn }}><Icon name="clock" size={13} /> قيد المراجعة</span>}<div style={{ color: P.muted }}>{f.idNumber}</div></div>
+              </button>
+              {openId === f.idNumber && (
+                <div className="px-2 pb-5 pt-1" style={{ borderTop: `1px dashed ${P.border}`, color: P.muted }}>
+                  <div className="grid grid-cols-2 gap-2 text-xs mb-3">
+                    <div className="pt-3">الجوال: <span style={{ color: P.text }}>{f.phone}</span></div>
+                    {admin.role === "مالك" && <div className="pt-3">الدخل: <span style={{ color: P.text }}>{f.income}</span></div>}
+                    {admin.role === "مالك" && <div className="pt-3">الحالة الصحية: <span style={{ color: P.text }}>{f.health}</span></div>}
+                    <div className="pt-3">حالة السكن: <span style={{ color: P.text }}>{f.housingStatus}</span></div>
+                  </div>
+                  <div className="flex flex-wrap gap-2" onClick={(e) => e.stopPropagation()}>
+                    <a href={`tel:${f.phone}`} className="btn-anim flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold text-white" style={{ background: P.primarySolid }}><Icon name="phone" size={13} /> اتصال</a>
+                    <a href={`https://wa.me/970${String(f.phone || "").replace(/^0/, "")}`} target="_blank" rel="noreferrer" className="btn-anim flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold text-white" style={{ background: "#25D366" }}><Icon name="message-circle" size={13} /> واتساب</a>
+                    <a href={`sms:${f.phone}`} className="btn-anim flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold" style={{ border: `1px solid ${P.border}`, color: P.text }}><Icon name="message-square" size={13} /> SMS</a>
+                    <button onClick={() => setEditFamily(f)} className="btn-anim flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold" style={{ border: `1px solid ${P.border}`, color: P.text }}><Icon name="pencil" size={13} /> تعديل</button>
+                    {admin.role === "مالك" && <button onClick={() => setDeleteTarget(f)} className="btn-anim flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold text-white" style={{ background: P.danger }}><Icon name="trash-2" size={13} /> حذف</button>}
+                  </div>
+                </div>
+              )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {editFamily && (
+        <EditFamilyModal P={P} family={editFamily} onClose={() => setEditFamily(null)} onSaved={() => { setEditFamily(null); loadAll(); }} />
+      )}
+      {deleteTarget && (
+        <Modal P={P} title="تأكيد الحذف" icon="trash-2" onClose={() => setDeleteTarget(null)}>
+          <div className="text-sm mb-5" style={{ color: P.text }}>هل أنت متأكد من حذف أسرة <b>{deleteTarget.name}</b> نهائياً؟ هذا الإجراء لا يمكن التراجع عنه.</div>
+          <div className="grid grid-cols-2 gap-2">
+            <button onClick={() => setDeleteTarget(null)} className="btn-anim py-3 rounded-2xl text-sm font-bold" style={{ border: `1px solid ${P.border}`, color: P.text }}>إلغاء</button>
+            <button onClick={async () => { await deleteFamily(deleteTarget.idNumber); setDeleteTarget(null); }} className="btn-anim py-3 rounded-2xl text-sm font-bold text-white" style={{ background: P.danger }}>حذف نهائي</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function EditFamilyModal({ P, family, onClose, onSaved }) {
+  const [form, setForm] = useState({ ...family });
+  const [saving, setSaving] = useState(false);
+  const upd = (k, v) => setForm((p) => ({ ...p, [k]: v }));
+  const save = async () => {
+    setSaving(true);
+    const fields = ["name", "phone", "altPhone", "square", "housingStatus", "income", "verified"];
+    await apiPost({ action: "adminUpdateFamily", idNumber: family.idNumber, updates: Object.fromEntries(fields.map((k) => [k, form[k]])) });
+    setSaving(false); onSaved();
+  };
+  return (
+    <Modal P={P} title="تعديل بيانات الأسرة" icon="pencil" onClose={onClose}>
+      <Field P={P} label="الاسم"><Input P={P} value={form.name} onChange={(v) => upd("name", v)} /></Field>
+      <Field P={P} label="الجوال الأساسي"><Input P={P} value={form.phone} onChange={(v) => upd("phone", v)} /></Field>
+      <Field P={P} label="الجوال البديل"><Input P={P} value={form.altPhone} onChange={(v) => upd("altPhone", v)} /></Field>
+      <Field P={P} label="المربع"><Input P={P} value={form.square} onChange={(v) => upd("square", v)} /></Field>
+      <Field P={P} label="حالة السكن"><Select P={P} value={form.housingStatus} onChange={(v) => upd("housingStatus", v)} options={["سليم", "متضرر جزئياً", "مدمر جزئياً", "مدمر كلياً"]} /></Field>
+      <Field P={P} label="مستوى الدخل"><Select P={P} value={form.income} onChange={(v) => upd("income", v)} options={["لا يوجد دخل (صفر)", "أقل من 500", "500 - 1000", "1000 - 2000", "أكثر من 2000"]} /></Field>
+      <button onClick={save} disabled={saving} className="btn-anim w-full py-3.5 rounded-2xl text-sm font-extrabold text-white flex items-center justify-center gap-2" style={{ backgroundImage: P.primaryGrad }}>{saving && <Spinner />} حفظ التعديلات مباشرة</button>
+    </Modal>
+  );
+}
+
+function App() {
+  const [screen, setScreen] = useState("landing");
+  const [theme, setTheme] = useState("light");
+  const [family, setFamily] = useState(null);
+  const [admin, setAdmin] = useState(null);
+  const P = getPalette(theme);
+  useLucideIcons();
+
+  const residentLogin = async (id, pin, setError) => {
+    const res = await apiGet({ action: "login", id, pin });
+    if (res.success) { setFamily(res.family); setScreen("resident-form"); }
+    else setError(res.message || "بيانات الدخول غير صحيحة");
+  };
+  const adminLogin = async (id, pin, setError) => {
+    const res = await apiGet({ action: "adminLogin", id, pin });
+    if (res.success) { setAdmin(res.admin); setScreen("admin-dashboard"); }
+    else setError(res.message || "بيانات الدخول غير صحيحة");
+  };
+
+  if (screen === "landing") return <Landing onPick={(r) => setScreen(r === "resident" ? "resident-login" : r === "admin" ? "admin-login" : "join")} theme={theme} setTheme={setTheme} P={P} />;
+  if (screen === "resident-login") return <LoginForm title="دخول النازح" role="resident" onBack={() => setScreen("landing")} onSubmit={residentLogin} P={P} />;
+  if (screen === "resident-form") return <ResidentForm onExit={() => setScreen("landing")} P={P} initialFamily={family} />;
+  if (screen === "admin-login") return <LoginForm title="دخول المسؤولين" role="admin" onBack={() => setScreen("landing")} onSubmit={adminLogin} P={P} />;
+  if (screen === "admin-dashboard") return <AdminDashboard onExit={() => setScreen("landing")} theme={theme} setTheme={setTheme} P={P} admin={admin} />;
+  if (screen === "join") return <JoinRequestScreen onBack={() => setScreen("landing")} P={P} />;
+  return null;
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>function useLucideIcons() {
   useEffect(() => {
     clearTimeout(_iconTimer.current);
     _iconTimer.current = setTimeout(() => { if (window.lucide) window.lucide.createIcons(); }, 60);
